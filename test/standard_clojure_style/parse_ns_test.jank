@@ -1,0 +1,71 @@
+(ns standard-clojure-style.parse-ns-test
+  (:require
+   [parse-ns-cases :as pc]
+   [standard-clojure-style.parse-ns :as ns-parser]
+   [standard-clojure-style.parser :as p]
+   [standard-clojure-style.util :as u]))
+
+(defn- parse-input-to-ns [t-input]
+  (let [tree (p/parse t-input)
+        flat (ns-parser/flatten-tree tree)]
+    (ns-parser/parse-ns flat)))
+
+(defn- safe-parse [t-input]
+  (try
+    {:ok (parse-input-to-ns t-input)}
+    (catch e
+      {:error (str e)})))
+
+(defn run-test-case [t]
+  (let [t-name (get t "name")
+        t-input (get t "input")
+        t-expected (get t "expected")
+        res (safe-parse t-input)]
+    (if (:error res)
+      (if (get t-expected "parsingShouldError")
+        (let [expected-err (get t-expected "errorMessage")
+              actual-err (:error res)]
+          (if (and expected-err actual-err (u/includes? actual-err expected-err))
+            {:pass? true}
+            {:pass? false :name t-name :expected t-expected :actual actual-err
+             :reason (str "Error message mismatch. Expected: " expected-err ", Actual: " actual-err)}))
+        {:pass? false :name t-name :expected t-expected :actual (:error res)
+         :reason (str "Unexpected exception: " (:error res))})
+      (let [parsed-ns (:ok res)]
+        (if (get t-expected "parsingShouldError")
+          {:pass? false :name t-name :expected t-expected :actual parsed-ns
+           :reason "Expected exception but succeeded"}
+          (if (= parsed-ns t-expected)
+            {:pass? true}
+            {:pass? false :name t-name :expected t-expected :actual parsed-ns
+             :reason "Output mismatch"}))))))
+
+(defn run-all-tests []
+  (let [cases pc/tests]
+    (loop [cases cases
+           passed 0
+           failed 0
+           failed-list []]
+      (if (empty? cases)
+        (do
+          (println (str "ParseNs Tests: " passed " passed, " failed " failed"))
+          (when (seq failed-list)
+            (println "Failed tests count:" (count failed-list))
+            (doseq [f (take 5 failed-list)]
+              (println "----" (:name f) "----")
+              (when (:reason f) (println "Reason:" (:reason f)))
+              (println "Expected:")
+              (println (:expected f))
+              (println "Actual:")
+              (println (:actual f))))
+          failed)
+        (let [res (run-test-case (first cases))]
+          (if (:pass? res)
+            (recur (rest cases) (inc passed) failed failed-list)
+            (recur (rest cases) passed (inc failed) (conj failed-list res))))))))
+
+(defn -main [& _args]
+  (let [failed (run-all-tests)]
+    failed))
+
+(run-all-tests)

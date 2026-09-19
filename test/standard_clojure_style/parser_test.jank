@@ -1,0 +1,65 @@
+(ns standard-clojure-style.parser-test
+  (:require
+   [parser-cases :as pc]
+   [standard-clojure-style.parser :as p]
+   [standard-clojure-style.util :as u]))
+
+(defn is-whitespace-node [node]
+  (and (map? node)
+       (string? (:name node))
+       (or (= (:name node) "whitespace")
+           (= (:name node) "whitespace:newline"))))
+
+(defn replace-nl [s]
+  (apply str (map (fn [c] (if (= c u/ch-newline) "\\n" (str c))) s)))
+
+(defn node-to-string
+  ([node] (node-to-string node 0))
+  ([node indent-level]
+   (if (is-whitespace-node node)
+     ""
+     (let [lvl (or indent-level 0)
+           indent (u/repeat-string "  " lvl)
+           prefix (if (= (:name node) "source") "" "\n")
+           out-txt (str prefix indent "(" (:name node) " " (:startIdx node) ".." (:endIdx node))
+           text-part (if (and (:text node) (not= (:text node) ""))
+                       (str " '" (replace-nl (:text node)) "'")
+                       "")
+           children-part (if (:children node)
+                           (apply str (map #(node-to-string % (inc lvl)) (:children node)))
+                           "")]
+       (str out-txt text-part children-part ")")))))
+
+(defn run-all-tests []
+  (loop [cases pc/tests
+         passed 0
+         failed 0
+         failed-list []]
+    (if (empty? cases)
+      (do
+        (println (str "Parser Tests: " passed " passed, " failed " failed"))
+        (when (seq failed-list)
+          (println "Failed tests count:" (count failed-list))
+          (doseq [f (take 3 failed-list)]
+            (println "Failed:" (:name f))
+            (println "Expected:")
+            (println (:expected f))
+            (println "Actual:")
+            (println (:actual f))))
+        failed)
+      (let [t (first cases)
+            t-name (get t "name")
+            t-input (get t "input")
+            t-expected (get t "expected")
+            tree (p/parse t-input)
+            tree-str (node-to-string tree 0)]
+        (if (= tree-str t-expected)
+          (recur (rest cases) (inc passed) failed failed-list)
+          (recur (rest cases) passed (inc failed)
+                 (conj failed-list {:name t-name :expected t-expected :actual tree-str})))))))
+
+(defn -main [& _args]
+  (let [failed (run-all-tests)]
+    failed))
+
+(run-all-tests)

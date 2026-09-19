@@ -1,0 +1,83 @@
+(ns standard-clojure-style.main
+  (:require
+   [standard-clojure-style.core :as scs]
+   [standard-clojure-style.util :as u]))
+
+(def version "0.1.0-jank")
+
+(defn print-help []
+  (println "standard-clj - Standard Clojure Style (jank port)")
+  (println "")
+  (println "Usage:")
+  (println "  standard-clj fix <file...>        Format Clojure files in place")
+  (println "  standard-clj fix -                Format code read from stdin")
+  (println "  standard-clj check <file...>      Check if files are formatted")
+  (println "  standard-clj list <file...>       List files that would be processed")
+  (println "  standard-clj --version            Show version")
+  (println "  standard-clj --help               Show this help message"))
+
+(defn- format-code-string [code]
+  (let [res (scs/format code)]
+    (if (= (:status res) "success")
+      (do
+        (println (:out res))
+        0)
+      (do
+        (println (str "Error: " (:reason res)))
+        1))))
+
+(defn- check-code-string [code]
+  (let [res (scs/format code)]
+    (if (= (:status res) "success")
+      (let [out-with-nl (str (:out res) "\n")
+            in-clean (str (u/trim code) "\n")]
+        (if (= out-with-nl in-clean)
+          (do
+            (println "Formatted with Standard Clojure Style")
+            0)
+          (do
+            (println "Requires formatting")
+            1)))
+      (do
+        (println (str "Error: " (:reason res)))
+        1))))
+
+(defn -main [& args]
+  (let [arg-list (vec args)]
+    (cond
+      (empty? arg-list)
+      (do
+        (print-help)
+        0)
+
+      (or (= (first arg-list) "--help") (= (first arg-list) "-h") (= (first arg-list) "help"))
+      (do
+        (print-help)
+        0)
+
+      (or (= (first arg-list) "--version") (= (first arg-list) "-v") (= (first arg-list) "version"))
+      (do
+        (println (str "standard-clj " version))
+        0)
+
+      (= (first arg-list) "fix")
+      (let [code (u/join " " (rest arg-list))]
+        (format-code-string code))
+
+      (= (first arg-list) "check")
+      (let [code (u/join " " (rest arg-list))]
+        (check-code-string code))
+
+      (= (first arg-list) "parse")
+      (let [code (u/join " " (rest arg-list))]
+        (prn (scs/parse code))
+        0)
+
+      (= (first arg-list) "parse-ns")
+      (let [code (u/join " " (rest arg-list))]
+        (prn (scs/parse-ns code))
+        0)
+
+      :else
+      (let [code (u/join " " arg-list)]
+        (format-code-string code)))))

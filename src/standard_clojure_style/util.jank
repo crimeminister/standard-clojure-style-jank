@@ -1,0 +1,387 @@
+(ns standard-clojure-style.util
+  (:refer-clojure :exclude [assoc-in sort sort-by update-in]))
+
+;; -----------------------------------------------------------------------------
+;; Character Constants
+;; Defined as (first "...") to avoid reader macro bugs in jank compiler
+
+(def ch-open-paren (first "("))
+(def ch-close-paren (first ")"))
+(def ch-open-bracket (first "["))
+(def ch-close-bracket (first "]"))
+(def ch-open-brace (first "{"))
+(def ch-close-brace (first "}"))
+(def ch-double-quote (first "\""))
+(def ch-semicolon (first ";"))
+(def ch-at (first "@"))
+(def ch-tilde (first "~"))
+(def ch-single-quote (first "'"))
+(def ch-backtick (first "`"))
+(def ch-caret (first "^"))
+(def ch-hash (first "#"))
+(def ch-comma (first ","))
+(def ch-backslash (first "\\"))
+(def ch-colon (first ":"))
+(def ch-dot (first "."))
+(def ch-dash (first "-"))
+(def ch-underscore (first "_"))
+(def ch-space (first " "))
+(def ch-newline (first "\n"))
+(def ch-return (first "\r"))
+(def ch-tab (first "\t"))
+(def ch-formfeed (first "\f"))
+
+(def whitespace-char-set #{ch-space ch-comma ch-newline ch-return ch-tab ch-formfeed})
+(def standard-whitespace-chars #{ch-space ch-newline ch-tab ch-return ch-formfeed})
+
+;; -----------------------------------------------------------------------------
+;; String utilities
+
+(defn str-len [s]
+  (if (nil? s) 0 (count s)))
+
+(defn char-at [s idx]
+  (nth s idx))
+
+(defn substr
+  ([s start]
+   (if (or (nil? s) (>= start (count s)))
+     ""
+     (subs s start)))
+  ([s start end]
+   (if (or (nil? s) (>= start end))
+     ""
+     (subs s start (- end start)))))
+
+(defn starts-with? [s prefix]
+  (let [s-len (str-len s)
+        p-len (str-len prefix)]
+    (and (>= s-len p-len)
+         (= (substr s 0 p-len) prefix))))
+
+(defn ends-with? [s suffix]
+  (let [s-len (str-len s)
+        p-len (str-len suffix)]
+    (and (>= s-len p-len)
+         (= (substr s (- s-len p-len) s-len) suffix))))
+
+(defn index-of
+  ([s match]
+   (if (or (nil? s) (nil? match))
+     nil
+     (let [idx (clojure.core-native/first-index-of s (str match))]
+       (if (= idx -1) nil idx))))
+  ([s match from-index]
+   (if (or (nil? s) (nil? match) (>= from-index (count s)))
+     nil
+     (let [sub (subs s from-index)
+           idx (clojure.core-native/first-index-of sub (str match))]
+       (if (= idx -1) nil (+ idx from-index))))))
+
+(defn last-index-of
+  ([s match]
+   (if (or (nil? s) (nil? match))
+     nil
+     (let [idx (clojure.core-native/last-index-of s (str match))]
+       (if (= idx -1) nil idx))))
+  ([s match from-index]
+   (if (or (nil? s) (nil? match) (<= from-index 0))
+     (if (and (= from-index 0) (starts-with? s (str match))) 0 nil)
+     (let [sub (substr s 0 (min (count s) (inc from-index)))
+           idx (clojure.core-native/last-index-of sub (str match))]
+       (if (= idx -1) nil idx)))))
+
+(defn includes? [s match]
+  (not (nil? (index-of s match))))
+
+(defn blank? [s]
+  (or (nil? s)
+      (every? #(or (= % ch-space) (= % ch-newline) (= % ch-tab) (= % ch-return) (= % ch-formfeed)) s)))
+
+(defn triml [s]
+  (if (nil? s)
+    ""
+    (let [n (count s)]
+      (loop [i 0]
+        (cond
+          (= i n) ""
+          (contains? standard-whitespace-chars (nth s i)) (recur (inc i))
+          :else (substr s i n))))))
+
+(defn trimr [s]
+  (if (nil? s)
+    ""
+    (let [n (count s)]
+      (loop [i n]
+        (cond
+          (zero? i) ""
+          (contains? standard-whitespace-chars (nth s (dec i))) (recur (dec i))
+          :else (substr s 0 i))))))
+
+(defn trim [s]
+  (trimr (triml s)))
+
+(defn split
+  ([s sep]
+   (if (empty? s)
+     []
+     (let [sep-str (str sep)
+           sep-len (count sep-str)]
+       (if (zero? sep-len)
+         (mapv str s)
+         (loop [start 0
+                acc []]
+           (if-let [idx (index-of s sep-str start)]
+             (recur (+ idx sep-len) (conj acc (substr s start idx)))
+             (conj acc (substr s start (count s))))))))))
+
+(defn replace-first [s match replacement]
+  (if-let [idx (index-of s match)]
+    (str (substr s 0 idx) replacement (substr s (+ idx (count (str match))) (count s)))
+    s))
+
+(defn replace-all [s match replacement]
+  (let [match-str (str match)
+        match-len (count match-str)]
+    (if (zero? match-len)
+      s
+      (loop [start 0
+             acc []]
+        (if-let [idx (index-of s match-str start)]
+          (recur (+ idx match-len) (conj (conj acc (substr s start idx)) replacement))
+          (apply str (conj acc (substr s start (count s)))))))))
+
+(defn split-lines [s]
+  (if (empty? s)
+    []
+    (split (replace-all s "\r\n" "\n") "\n")))
+
+(defn join
+  ([coll] (apply str coll))
+  ([sep coll]
+   (if (empty? coll)
+     ""
+     (loop [s (str (first coll))
+            more (rest coll)]
+       (if (seq more)
+         (recur (str s sep (first more)) (rest more))
+         s)))))
+
+(def ^:private lower->upper
+  (zipmap "abcdefghijklmnopqrstuvwxyz" "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+
+(def ^:private upper->lower
+  (zipmap "ABCDEFGHIJKLMNOPQRSTUVWXYZ" "abcdefghijklmnopqrstuvwxyz"))
+
+(defn upper-case [s]
+  (if (nil? s)
+    ""
+    (apply str (map #(get lower->upper % %) s))))
+
+(defn lower-case [s]
+  (if (nil? s)
+    ""
+    (apply str (map #(get upper->lower % %) s))))
+
+(defn repeat-string [text n]
+  (if (and text (> n 0))
+    (loop [i 0 acc []]
+      (if (< i n)
+        (recur (inc i) (conj acc text))
+        (apply str acc)))
+    ""))
+
+(defn append-spaces [txt n]
+  (str txt (repeat-string " " n)))
+
+;; -----------------------------------------------------------------------------
+;; Formatting & Comment helpers
+
+(defn format-comment-spacing [txt]
+  (if (or (nil? txt) (empty? txt))
+    txt
+    (let [n (count txt)]
+      (loop [i 0]
+        (if (< i n)
+          (if (= (nth txt i) ch-semicolon)
+            (recur (inc i))
+            (if (and (> i 0) (not= (nth txt i) ch-space))
+              (str (subs txt 0 i) " " (subs txt i (- n i)))
+              txt))
+          txt)))))
+
+(defn is-invalid-comment-text [comment-txt]
+  (if (or (nil? comment-txt) (empty? comment-txt))
+    false
+    (let [n (count comment-txt)]
+      (loop [i 0]
+        (if (< i n)
+          (if (= (nth comment-txt i) ch-semicolon)
+            (recur (inc i))
+            (if (zero? i)
+              false
+              (not= (nth comment-txt i) ch-space)))
+          false)))))
+
+(defn remove-leading-whitespace [txt]
+  (if (or (nil? txt) (empty? txt))
+    ""
+    (let [n (count txt)]
+      (loop [i 0]
+        (if (< i n)
+          (let [c (nth txt i)]
+            (cond
+              (or (= c ch-space) (= c ch-comma))
+              (recur (inc i))
+
+              (= c ch-newline)
+              (loop [j (inc i)]
+                (if (< j n)
+                  (let [c2 (nth txt j)]
+                    (cond
+                      (or (= c2 ch-newline) (= c2 ch-return) (= c2 ch-space))
+                      (recur (inc j))
+
+                      :else
+                      (trimr (substr txt j n))))
+                  ""))
+
+              :else
+              (trimr txt)))
+          (trimr txt))))))
+
+;; -----------------------------------------------------------------------------
+;; Stable Merge Sort
+;; Replaces clojure.core/sort which is unimplemented in jank
+
+(defn to-vec [coll]
+  (if (vector? coll)
+    coll
+    (if (seq coll)
+      (loop [c coll
+             acc []]
+        (if (seq c)
+          (recur (rest c) (conj acc (first c)))
+          acc))
+      [])))
+
+(defn filterv* [pred coll]
+  (loop [c coll
+         acc []]
+    (if (seq c)
+      (let [x (first c)]
+        (recur (rest c) (if (pred x) (conj acc x) acc)))
+      acc)))
+
+(defn mapv* [f coll]
+  (loop [c coll
+         acc []]
+    (if (seq c)
+      (recur (rest c) (conj acc (f (first c))))
+      acc)))
+
+(defn removev* [pred coll]
+  (loop [c coll
+         acc []]
+    (if (seq c)
+      (let [x (first c)]
+        (recur (rest c) (if (pred x) acc (conj acc x))))
+      acc)))
+
+(defn partition-pairs [coll]
+  (loop [c coll
+         acc []]
+    (if (and (seq c) (seq (rest c)))
+      (recur (drop 2 c) (conj acc [(first c) (second c)]))
+      acc)))
+
+(defn merge-sorted [cmp left right]
+  (loop [l left
+         r right
+         acc []]
+    (cond
+      (empty? l) (into acc r)
+      (empty? r) (into acc l)
+      :else
+      (let [x (first l)
+            y (first r)]
+        (if (<= (cmp x y) 0)
+          (recur (rest l) r (conj acc x))
+          (recur l (rest r) (conj acc y)))))))
+
+(defn merge-sort
+  ([coll] (merge-sort compare coll))
+  ([cmp coll]
+   (let [v (to-vec coll)
+         cnt (count v)]
+     (if (<= cnt 1)
+       v
+       (let [mid (quot cnt 2)
+             left (subvec v 0 mid)
+             right (subvec v mid cnt)]
+         (merge-sorted cmp (merge-sort cmp left) (merge-sort cmp right)))))))
+
+(def sort merge-sort)
+
+(defn sort-by
+  ([keyfn coll] (merge-sort (fn [x y] (compare (keyfn x) (keyfn y))) coll))
+  ([keyfn cmp coll] (merge-sort (fn [x y] (cmp (keyfn x) (keyfn y))) coll)))
+
+;; -----------------------------------------------------------------------------
+;; Associative operations supporting both Maps and Vectors
+;; Fixes "not associatively writable" on persistent_vector in jank
+
+(defn assoc-vec [v idx val]
+  (let [cnt (count v)]
+    (cond
+      (= idx cnt) (conj v val)
+      (and (>= idx 0) (< idx cnt))
+      (into (conj (subvec v 0 idx) val) (subvec v (inc idx) cnt))
+      :else (throw "Index out of bounds"))))
+
+(defn assoc*
+  ([m k v]
+   (if (vector? m)
+     (assoc-vec m k v)
+     (assoc m k v)))
+  ([m k v & kvs]
+   (let [ret (assoc* m k v)]
+     (if kvs
+       (if (next kvs)
+         (recur ret (first kvs) (second kvs) (nnext kvs))
+         (throw "assoc requires even number of args"))
+       ret))))
+
+(defn assoc-in
+  [m [k & ks] v]
+  (if ks
+    (assoc* m k (assoc-in (get m k) ks v))
+    (assoc* m k v)))
+
+(defn update-in
+  [m [k & ks] f & args]
+  (if ks
+    (assoc* m k (apply update-in (get m k) ks f args))
+    (assoc* m k (apply f (get m k) args))))
+
+(defn update*
+  ([m k f]
+   (if (vector? m)
+     (assoc-vec m k (f (nth m k)))
+     (update m k f)))
+  ([m k f x]
+   (if (vector? m)
+     (assoc-vec m k (f (nth m k) x))
+     (update m k f x)))
+  ([m k f x y]
+   (if (vector? m)
+     (assoc-vec m k (f (nth m k) x y))
+     (update m k f x y)))
+  ([m k f x y z]
+   (if (vector? m)
+     (assoc-vec m k (f (nth m k) x y z))
+     (update m k f x y z)))
+  ([m k f x y z & more]
+   (if (vector? m)
+     (assoc-vec m k (apply f (nth m k) x y z more))
+     (apply update m k f x y z more))))

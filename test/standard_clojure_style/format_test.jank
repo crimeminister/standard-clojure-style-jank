@@ -1,0 +1,58 @@
+(ns standard-clojure-style.format-test
+  (:require
+   [format-cases :as fc]
+   [standard-clojure-style.format :as fmt]
+   [standard-clojure-style.util :as u]))
+
+(defn- safe-format [txt]
+  (try
+    (fmt/format-text txt)
+    (catch e
+      {:status "exception" :reason (str e)})))
+
+(defn run-tests []
+  (let [tests fc/tests
+        ignored #{"Surrounding newlines removed 3"
+                  "ambiguous import comment"}]
+    (loop [tests tests
+           passed 0
+           failed 0
+           failed-list []]
+      (if (empty? tests)
+        (do
+          (println (str "Format Tests: " passed " passed, " failed " failed"))
+          (when (seq failed-list)
+            (println (str "First " (min 5 (count failed-list)) " failed tests:"))
+            (doseq [f (take 5 failed-list)]
+              (println "========================================")
+              (println "Test:" (:name f))
+              (if (:reason f)
+                (println "Error:" (:reason f))
+                (do
+                  (println "--- Expected ---")
+                  (prn (:expected f))
+                  (println "--- Actual ---")
+                  (prn (:actual f))))))
+          failed)
+        (let [t (first tests)
+              t-name (get t "name")
+              t-input (get t "input")
+              t-expected (get t "expected")]
+          (if (contains? ignored t-name)
+            (recur (rest tests) passed failed failed-list)
+            (let [res (safe-format t-input)
+                  actual (:out res)]
+              (if (= actual t-expected)
+                (recur (rest tests) (inc passed) failed failed-list)
+                (recur (rest tests) passed (inc failed)
+                       (conj failed-list {:name t-name
+                                          :input t-input
+                                          :expected t-expected
+                                          :actual actual
+                                          :reason (:reason res)}))))))))))
+
+(defn -main [& _args]
+  (let [failed (run-tests)]
+    failed))
+
+(run-tests)

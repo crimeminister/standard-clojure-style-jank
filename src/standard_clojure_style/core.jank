@@ -1,0 +1,34 @@
+(ns standard-clojure-style.core
+  (:refer-clojure :exclude [format])
+  (:require
+   [standard-clojure-style.format :as fmt]
+   [standard-clojure-style.parse-ns :as ns-parser]
+   [standard-clojure-style.parser :as parser]))
+
+(defn format
+  "Formats Clojure/ClojureScript/EDN source code according to Standard Clojure Style.
+   Returns a map {:status \"success\" :out <formatted-string>} or {:status \"error\" :reason <msg>}."
+  [input-txt]
+  (fmt/format-text input-txt))
+
+(defn format-text
+  "Alias for `format`."
+  [input-txt]
+  (fmt/format-text input-txt))
+
+(defn parse
+  "Parses Clojure source code into a syntax node tree."
+  [input-txt]
+  (parser/parse input-txt))
+
+(defn parse-ns
+  "Parses a namespace declaration from either a source string or a pre-parsed syntax tree."
+  [input-txt-or-nodes]
+  (if (string? input-txt-or-nodes)
+    (let [tree (parser/parse input-txt-or-nodes)
+          nodes-arr (ns-parser/flatten-tree tree)]
+      (ns-parser/parse-ns nodes-arr))
+    (let [nodes-arr (if (vector? input-txt-or-nodes)
+                      input-txt-or-nodes
+                      (ns-parser/flatten-tree input-txt-or-nodes))]
+      (ns-parser/parse-ns nodes-arr))))

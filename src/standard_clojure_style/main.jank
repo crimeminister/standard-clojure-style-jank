@@ -42,6 +42,49 @@
         (println (str "Error: " (:reason res)))
         1))))
 
+(defn- batch-check [args]
+  (let [pairs (partition 2 args)
+        has-error (atom false)
+        has-diff (atom false)]
+    (doseq [[f code] pairs]
+      (let [res (scs/format code)]
+        (if (= (:status res) "success")
+          (let [out-with-nl (str (:out res) "\n")
+                in-clean (str (u/trim code) "\n")]
+            (if (= out-with-nl in-clean)
+              (println (str "OK " f))
+              (do
+                (reset! has-diff true)
+                (println (str "DIFF " f)))))
+          (do
+            (reset! has-error true)
+            (println (str "ERROR " f " " (:reason res)))))))
+    (if (or @has-error @has-diff)
+      1
+      0)))
+
+(defn- batch-fix [args]
+  (let [pairs (partition 2 args)
+        has-error (atom false)]
+    (doseq [[f code] pairs]
+      (let [res (scs/format code)]
+        (if (= (:status res) "success")
+          (let [out-with-nl (str (:out res) "\n")
+                in-clean (str (u/trim code) "\n")]
+            (if (= out-with-nl in-clean)
+              (println (str "OK " f))
+              (do
+                (println (str "DIFF " f))
+                (println "===FILE_START===")
+                (println (:out res))
+                (println "===FILE_END==="))))
+          (do
+            (reset! has-error true)
+            (println (str "ERROR " f " " (:reason res)))))))
+    (if @has-error
+      1
+      0)))
+
 (defn -main [& args]
   (let [arg-list (vec args)]
     (cond
@@ -59,6 +102,12 @@
       (do
         (println (str "standard-clj " version))
         0)
+
+      (= (first arg-list) "batch-check")
+      (batch-check (rest arg-list))
+
+      (= (first arg-list) "batch-fix")
+      (batch-fix (rest arg-list))
 
       (= (first arg-list) "fix")
       (let [code (u/join " " (rest arg-list))]

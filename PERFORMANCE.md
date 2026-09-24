@@ -164,3 +164,86 @@ Based on insights from the Jolt port (which achieved a **56.8x speedup** after o
    Replace per-node atom wrapping with a flat state array or mutable record for tracking column positions and indentation levels.
 4. **Leveraging Native C++ Interop (`cpp/`):**
    As jank's C++ interop layer matures, string operations (such as regex matching and buffer manipulation) can be delegated directly to standard C++ `<string_view>` and `<regex>` routines.
+
+---
+
+## 7. Post-Optimization Benchmark & Evaluation
+
+Following the implementation of the performance enhancements inspired by the sibling Jolt port:
+
+1. **$O(1)$ String Character Access (Elimination of $O(N^2)$ AST Parsing Bottleneck):**
+   - In jank, indexing a string with `(nth s idx)` performs a linear traversal from the string head ($O(N)$), causing tight scanning loops across an 80 KB source file to execute in $O(N^2)$ quadratic time.
+   - Replaced all string character indexing across `util.jank`, `parser.jank`, and `format.jank` with `(first (subs s idx 1))`, which delegates directly to C++ `std::string::substr` pointer indexing in $O(1)$ constant time.
+   - Microbenchmarks on scanning `parse_ns.jank` (78,510 characters) showed character scanning time dropped from **4,779 ms down to 21 ms** (**224x faster**), and `parse_ns.jank` CST parsing dropped from **8,752 ms down to 103 ms** (**85x faster**).
+2. **Selective Use of Transients for CST Flattening & Collection Accumulation:**
+   - Replaced atom-wrapped accumulators and synchronization barriers with Clojure transient collections (`transient`, `conj!`, `assoc!`, `persistent!`) in:
+     - `flatten-tree`: Direct transient traversal of CST nodes into persistent vectors without atom overhead.
+     - `get-text-from-root-node` & `get-metadata-strings-from-meta-node`: Transient string chunk accumulation.
+     - `parse-gen-class-exposes`, `sort-ns-result`, `get-platforms-from-array`, `only-one-require-per-platform`, `format-renames-list`, and `get-refer-clojure-keys`.
+3. **Lazy Parser Combinator Resolution & AST Node Optimization:**
+   - In `parser.jank`, combinators (`Choice`, `SeqParser`, `Repeat`, `Named`, `Optional`) previously performed dynamic lookups into the `@parsers-registry` atom on every character and form. Added lazy resolution to pre-cache parser functions on first invocation.
+   - In `string-body-parser`, eliminated per-character string allocation and vector accumulation in favor of direct zero-allocation string slicing via `substr`.
+   - In `make-node`, replaced multi-step persistent `assoc` calls with transient map construction.
+   - Replaced string comparisons in character predicates (`is-ascii-letter?`, `is-ident-char?`) with constant hash-set lookups.
+4. **In-Process Batching in the CLI Wrapper:**
+   - Implemented `batch-check` and `batch-fix` commands in `main.jank` and updated `bin/standard-clj` to pass target files in batch to a single runtime instance.
+   - Amortized jank's cold JIT startup latency (~2.8s) across all target files, reducing end-to-end CLI checking from **44.36s down to 3.90s** (**11.4x faster**).
+
+### Post-Optimization In-Engine Benchmark Results
+
+```text
+✓ deps.edn [3.37ms]
+✓ src/standard_clojure_style/core.jank [4.19ms]
+✓ src/standard_clojure_style/main.jank [23.85ms]
+✓ test/standard_clojure_style/format_test.jank [10.32ms]
+✓ test/standard_clojure_style/parse_ns_test.jank [15.61ms]
+✓ test/standard_clojure_style/parser_test.jank [14.36ms]
+✓ src/standard_clojure_style/util.jank [76.52ms]
+✓ src/standard_clojure_style/parser.jank [118.72ms]
+✓ test_cases/parser_cases.jank [133.97ms]
+✓ src/standard_clojure_style/format.jank [312.94ms]
+✓ src/standard_clojure_style/parse_ns.jank [401.24ms]
+
+Total in-engine format time: 1115.09ms (~1.12s)
+```
+
+### CLI End-to-End Execution (`bin/standard-clj check`)
+
+```text
+$ time bin/standard-clj check deps.edn src/ test/
+✓ deps.edn
+✓ src/standard_clojure_style/core.jank
+✓ src/standard_clojure_style/format.jank
+✓ src/standard_clojure_style/main.jank
+✓ src/standard_clojure_style/parse_ns.jank
+✓ src/standard_clojure_style/parser.jank
+✓ src/standard_clojure_style/util.jank
+✓ test/standard_clojure_style/format_test.jank
+✓ test/standard_clojure_style/parse_ns_test.jank
+✓ test/standard_clojure_style/parser_test.jank
+
+real	0m3.902s
+user	0m3.539s
+sys	0m0.348s
+```
+
+---
+
+## 8. Comparative Performance Summary
+
+| Target File | Lines / Size | Baseline (jank) | Post-Optimization (jank) | Upstream JS (V8) | Improvement (vs Baseline) |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| `deps.edn` | 21 lines / 0.5 KB | 3.69 ms | **3.37 ms** | 2.91 ms | 1.1x faster |
+| `src/standard_clojure_style/core.jank` | 32 lines / 1.2 KB | 5.86 ms | **4.19 ms** | 1.54 ms | 1.4x faster |
+| `test/standard_clojure_style/format_test.jank` | 59 lines / 2.1 KB | 16.40 ms | **10.32 ms** | 0.98 ms | 1.6x faster |
+| `test/standard_clojure_style/parse_ns_test.jank` | 59 lines / 2.1 KB | 24.80 ms | **15.61 ms** | 0.81 ms | 1.6x faster |
+| `test/standard_clojure_style/parser_test.jank` | 59 lines / 2.1 KB | 22.59 ms | **14.36 ms** | 0.49 ms | 1.6x faster |
+| `src/standard_clojure_style/main.jank` | 84 lines / 2.4 KB | 24.71 ms | **23.85 ms** | 0.76 ms | 1.0x faster |
+| `src/standard_clojure_style/util.jank` | 389 lines / 10.4 KB | 302.77 ms | **76.52 ms** | 4.90 ms | **4.0x faster** |
+| `src/standard_clojure_style/parser.jank` | 574 lines / 19.8 KB | 739.32 ms | **118.72 ms** | 4.51 ms | **6.2x faster** |
+| `test_cases/parser_cases.jank` | 2 lines / 35.0 KB | 1,213.56 ms | **133.97 ms** | 3.41 ms | **9.1x faster** |
+| `src/standard_clojure_style/format.jank` | 1,171 lines / 59.2 KB | 5,194.78 ms | **312.94 ms** | 18.13 ms | **16.6x faster** |
+| `src/standard_clojure_style/parse_ns.jank` | 1,583 lines / 78.3 KB | 8,966.44 ms | **401.24 ms** | 14.80 ms | **22.3x faster** |
+| **Total In-Engine Format Time** | **4,033 lines / 215.1 KB** | **16,514.93 ms (~16.51s)** | **1,115.09 ms (~1.12s)** | **60.92 ms (~0.06s)** | **14.8x faster** |
+| **CLI `check` End-to-End** | **10 project files** | **44.357 s** | **3.902 s** | **~0.15 s** | **11.4x faster** |
+

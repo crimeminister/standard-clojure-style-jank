@@ -3,6 +3,12 @@
    [standard-clojure-style.util :as u]))
 
 ;; -----------------------------------------------------------------------------
+;; Fast Character Access
+
+(defn- ch-at [txt idx]
+  (first (subs txt idx 1)))
+
+;; -----------------------------------------------------------------------------
 ;; Character Sets and Constants
 
 (def special-chars
@@ -22,6 +28,9 @@
     u/ch-caret u/ch-semicolon u/ch-backtick
     u/ch-space u/ch-comma u/ch-newline u/ch-return u/ch-tab u/ch-formfeed})
 
+(def ascii-letters-set (set "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+(def ident-chars-set (set "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789.-_"))
+
 ;; -----------------------------------------------------------------------------
 ;; Node Constructor & Helpers
 
@@ -32,17 +41,17 @@
 
 (defn make-node
   [{:keys [children endIdx id name startIdx text]}]
-  (assoc
-    {:id (or id (create-id))
-     :startIdx startIdx
-     :endIdx endIdx
-     :name name
-     :text text
-     :children children}
-    :_origColIdx -1
-    :_printedColIdx -1
-    :_printedLineIdx -1
-    :_wasSlurpedUp false))
+  (let [m (transient {:id (or id (create-id))
+                      :startIdx startIdx
+                      :endIdx endIdx
+                      :name name
+                      :text text
+                      :children children})]
+    (assoc! m :_origColIdx -1)
+    (assoc! m :_printedColIdx -1)
+    (assoc! m :_printedLineIdx -1)
+    (assoc! m :_wasSlurpedUp false)
+    (persistent! m)))
 
 (defn append-children [children-vec node]
   (cond
@@ -54,6 +63,16 @@
 
     :else children-vec))
 
+(defn- append-children-t [children-t node]
+  (cond
+    (and (string? (:name node)) (not= (:name node) ""))
+    (conj! children-t node)
+
+    (vector? (:children node))
+    (reduce append-children-t children-t (:children node))
+
+    :else children-t))
+
 (declare get-parser)
 
 ;; -----------------------------------------------------------------------------
@@ -61,11 +80,12 @@
 
 (defn Named [opts]
   (let [p-ref (:parser opts)
-        target-name (:name opts)]
+        target-name (:name opts)
+        resolved (atom nil)]
     {:name target-name
      :parse
      (fn [txt pos]
-       (let [p (get-parser p-ref)
+       (let [p (or @resolved (reset! resolved (get-parser p-ref)))
              node ((:parse p) txt pos)]
          (cond
            (nil? node) nil
@@ -82,13 +102,12 @@
     {:name node-name
      :parse
      (fn [txt pos]
-       (let [txt-len (u/str-len txt)]
-         (if (< pos txt-len)
-           (make-node {:endIdx (inc pos)
-                       :name node-name
-                       :startIdx pos
-                       :text (u/substr txt pos (inc pos))})
-           nil)))}))
+       (if (< pos (count txt))
+         (make-node {:endIdx (inc pos)
+                     :name node-name
+                     :startIdx pos
+                     :text (subs txt pos 1)})
+         nil))}))
 
 (defn Char [opts]
   (let [node-name (:name opts)
@@ -99,14 +118,13 @@
      :char target-char
      :parse
      (fn [txt pos]
-       (let [txt-len (u/str-len txt)]
-         (if (and (< pos txt-len)
-                  (= (u/char-at txt pos) target-ch))
-           (make-node {:endIdx (inc pos)
-                       :name node-name
-                       :startIdx pos
-                       :text target-char})
-           nil)))}))
+       (if (and (< pos (count txt))
+                (= (ch-at txt pos) target-ch))
+         (make-node {:endIdx (inc pos)
+                     :name node-name
+                     :startIdx pos
+                     :text target-char})
+         nil))}))
 
 (defn NotChar [opts]
   (let [node-name (:name opts)
@@ -117,107 +135,115 @@
      :char target-char
      :parse
      (fn [txt pos]
-       (let [txt-len (u/str-len txt)]
-         (if (< pos txt-len)
-           (let [ch (u/char-at txt pos)]
-             (if (not= ch target-ch)
-               (make-node {:endIdx (inc pos)
-                           :name node-name
-                           :startIdx pos
-                           :text (u/substr txt pos (inc pos))})
-               nil))
-           nil)))}))
+       (if (< pos (count txt))
+         (let [ch (ch-at txt pos)]
+           (if (not= ch target-ch)
+             (make-node {:endIdx (inc pos)
+                         :name node-name
+                         :startIdx pos
+                         :text (subs txt pos 1)})
+             nil))
+         nil))}))
 
 (defn StringParser [opts]
   (let [node-name (:name opts)
         target-str (:str opts)
-        target-len (u/str-len target-str)]
+        target-len (count target-str)]
     {:name node-name
      :parse
      (fn [txt pos]
-       (let [txt-len (u/str-len txt)]
-         (if (<= (+ pos target-len) txt-len)
-           (loop [i 0]
-             (if (< i target-len)
-               (if (= (u/char-at target-str i) (u/char-at txt (+ pos i)))
-                 (recur (inc i))
-                 nil)
-               (make-node {:endIdx (+ pos target-len)
-                           :name node-name
-                           :startIdx pos
-                           :text target-str})))
-           nil)))}))
+       (if (<= (+ pos target-len) (count txt))
+         (loop [i 0]
+           (if (< i target-len)
+             (if (= (nth target-str i) (ch-at txt (+ pos i)))
+               (recur (inc i))
+               nil)
+             (make-node {:endIdx (+ pos target-len)
+                         :name node-name
+                         :startIdx pos
+                         :text target-str})))
+         nil))}))
 
 (defn SeqParser [opts]
   (let [node-name (:name opts)
-        parser-refs (:parsers opts)]
+        parser-refs (:parsers opts)
+        resolved (atom nil)]
     {:name node-name
-     :isTerminal false
      :parse
      (fn [txt pos]
-       (loop [idx 0
-              children []
-              end-idx pos]
-         (if (< idx (count parser-refs))
-           (let [p (get-parser (nth parser-refs idx))
-                 node ((:parse p) txt end-idx)]
-             (if node
-               (recur (inc idx) (append-children children node) (:endIdx node))
-               nil))
-           (make-node {:children children
-                       :endIdx end-idx
-                       :name node-name
-                       :startIdx pos}))))}))
+       (let [parsers (or @resolved (reset! resolved (mapv get-parser parser-refs)))
+             n (count parsers)]
+         (loop [idx 0
+                curr-pos pos
+                children (transient [])]
+           (if (< idx n)
+             (let [p (nth parsers idx)
+                   node ((:parse p) txt curr-pos)]
+               (if node
+                 (recur (inc idx)
+                        (:endIdx node)
+                        (append-children-t children node))
+                 nil))
+             (make-node {:children (persistent! children)
+                         :endIdx curr-pos
+                         :name node-name
+                         :startIdx pos})))))}))
 
 (defn Choice [opts]
-  (let [parser-refs (:parsers opts)]
+  (let [parser-refs (:parsers opts)
+        resolved (atom nil)]
     {:parse
      (fn [txt pos]
-       (loop [idx 0]
-         (when (< idx (count parser-refs))
-           (let [p (get-parser (nth parser-refs idx))
-                 node ((:parse p) txt pos)]
-             (if node
-               node
-               (recur (inc idx)))))))}))
+       (let [parsers (or @resolved (reset! resolved (mapv get-parser parser-refs)))
+             n (count parsers)]
+         (loop [idx 0]
+           (when (< idx n)
+             (let [p (nth parsers idx)
+                   node ((:parse p) txt pos)]
+               (if node
+                 node
+                 (recur (inc idx))))))))}))
 
 (defn Repeat [opts]
   (let [node-name (:name opts)
         parser-ref (:parser opts)
-        min-matches (or (:minMatches opts) 0)]
+        min-matches (or (:minMatches opts) 0)
+        resolved (atom nil)]
     {:parse
      (fn [txt pos]
-       (let [p (get-parser parser-ref)]
+       (let [p (or @resolved (reset! resolved (get-parser parser-ref)))
+             parse-fn (:parse p)]
          (loop [end-idx pos
-                children []]
-           (let [node ((:parse p) txt end-idx)]
+                children (transient [])]
+           (let [node (parse-fn txt end-idx)]
              (if node
-               (recur (:endIdx node) (append-children children node))
+               (recur (:endIdx node) (append-children-t children node))
                (if (>= (count children) min-matches)
-                 (make-node {:children children
+                 (make-node {:children (persistent! children)
                              :endIdx end-idx
                              :name (when (and (string? node-name) (> end-idx pos)) node-name)
                              :startIdx pos})
                  nil))))))}))
 
 (defn Optional [parser-ref]
-  {:parse
-   (fn [txt pos]
-     (let [p (get-parser parser-ref)
-           node ((:parse p) txt pos)]
-       (if (and node (string? (:text node)) (not= (:text node) ""))
-         node
-         (make-node {:startIdx pos :endIdx pos}))))})
+  (let [resolved (atom nil)]
+    {:parse
+     (fn [txt pos]
+       (let [p (or @resolved (reset! resolved (get-parser parser-ref)))
+             node ((:parse p) txt pos)]
+         (if (and node (string? (:text node)) (not= (:text node) ""))
+           node
+           (make-node {:startIdx pos :endIdx pos}))))}))
 
 ;; -----------------------------------------------------------------------------
 ;; Terminal Character Parsers
 
 (defn whitespace-parser [txt pos]
-  (let [txt-len (u/str-len txt)]
+  (let [txt-len (count txt)]
     (if (< pos txt-len)
       (loop [idx pos]
         (if (< idx txt-len)
-          (let [ch (u/char-at txt idx)]
+          (let [ch (ch-at txt idx)]
             (if (contains? u/whitespace-char-set ch)
               (recur (inc idx))
               (if (> idx pos)
@@ -235,11 +261,11 @@
       nil)))
 
 (defn comment-parser [txt pos]
-  (let [txt-len (u/str-len txt)]
-    (if (and (< pos txt-len) (= (u/char-at txt pos) u/ch-semicolon))
+  (let [txt-len (count txt)]
+    (if (and (< pos txt-len) (= (ch-at txt pos) u/ch-semicolon))
       (loop [idx (inc pos)]
         (if (< idx txt-len)
-          (let [ch (u/char-at txt idx)]
+          (let [ch (ch-at txt idx)]
             (if (= ch u/ch-newline)
               (make-node {:endIdx idx
                           :name "comment"
@@ -253,40 +279,39 @@
       nil)))
 
 (defn string-body-parser [txt pos]
-  (let [txt-len (u/str-len txt)]
+  (let [txt-len (count txt)]
     (if (<= pos txt-len)
-      (loop [idx pos
-             acc []]
+      (loop [idx pos]
         (if (< idx txt-len)
-          (let [ch (u/char-at txt idx)]
+          (let [ch (ch-at txt idx)]
             (cond
               (= ch u/ch-backslash)
               (let [next-idx (inc idx)]
                 (if (< next-idx txt-len)
-                  (recur (+ idx 2) (conj (conj acc (str ch)) (str (u/char-at txt next-idx))))
+                  (recur (+ idx 2))
                   nil))
               (= ch u/ch-double-quote)
               (if (> idx pos)
                 (make-node {:endIdx idx
                             :name ".body"
                             :startIdx pos
-                            :text (apply str acc)})
+                            :text (u/substr txt pos idx)})
                 nil)
               :else
-              (recur (inc idx) (conj acc (str ch)))))
+              (recur (inc idx))))
           (if (> idx pos)
             (make-node {:endIdx idx
                         :name ".body"
                         :startIdx pos
-                        :text (apply str acc)})
+                        :text (u/substr txt pos idx)})
             nil)))
       nil)))
 
 (defn special-char-parser [txt pos]
-  (let [txt-len (u/str-len txt)]
+  (let [txt-len (count txt)]
     (if (and (< (inc pos) txt-len)
-             (= (u/char-at txt pos) u/ch-backslash)
-             (contains? special-chars (u/char-at txt (inc pos))))
+             (= (ch-at txt pos) u/ch-backslash)
+             (contains? special-chars (ch-at txt (inc pos))))
       (make-node {:endIdx (+ pos 2)
                   :name "token"
                   :startIdx pos
@@ -294,18 +319,18 @@
       nil)))
 
 (defn token-parser [txt pos]
-  (let [txt-len (u/str-len txt)]
+  (let [txt-len (count txt)]
     (if (< pos txt-len)
       (let [has-hash-hash? (and (< (inc pos) txt-len)
-                                (= (u/char-at txt pos) u/ch-hash)
-                                (= (u/char-at txt (inc pos)) u/ch-hash))
+                                (= (ch-at txt pos) u/ch-hash)
+                                (= (ch-at txt (inc pos)) u/ch-hash))
             start-idx (if has-hash-hash? (+ pos 2) pos)]
         (if (< start-idx txt-len)
-          (let [first-ch (u/char-at txt start-idx)]
+          (let [first-ch (ch-at txt start-idx)]
             (if (not (contains? invalid-token-head-chars first-ch))
               (loop [idx (inc start-idx)]
                 (if (< idx txt-len)
-                  (let [ch (u/char-at txt idx)]
+                  (let [ch (ch-at txt idx)]
                     (if (not (contains? invalid-token-tail-chars ch))
                       (recur (inc idx))
                       (make-node {:endIdx idx
@@ -320,35 +345,22 @@
           nil))
       nil)))
 
-(defn is-ascii-letter? [ch]
-  (let [s (str ch)]
-    (or (and (<= (compare "a" s) 0) (<= (compare s "z") 0))
-        (and (<= (compare "A" s) 0) (<= (compare s "Z") 0)))))
-
-(defn is-ident-char? [ch]
-  (let [s (str ch)]
-    (or (is-ascii-letter? ch)
-        (and (<= (compare "0" s) 0) (<= (compare s "9") 0))
-        (= ch u/ch-dot)
-        (= ch u/ch-dash)
-        (= ch u/ch-underscore))))
-
 (defn namespaced-brace-open-parser [txt pos]
-  (let [txt-len (u/str-len txt)]
+  (let [txt-len (count txt)]
     (if (and (< (+ pos 3) txt-len)
-             (= (u/char-at txt pos) u/ch-hash)
-             (= (u/char-at txt (inc pos)) u/ch-colon))
-      (let [k (if (= (u/char-at txt (+ pos 2)) u/ch-colon) (+ pos 3) (+ pos 2))]
-        (if (and (< k txt-len) (is-ascii-letter? (u/char-at txt k)))
+             (= (ch-at txt pos) u/ch-hash)
+             (= (ch-at txt (inc pos)) u/ch-colon))
+      (let [k (if (= (ch-at txt (+ pos 2)) u/ch-colon) (+ pos 3) (+ pos 2))]
+        (if (and (< k txt-len) (contains? ascii-letters-set (ch-at txt k)))
           (loop [idx (inc k)]
             (if (< idx txt-len)
-              (let [ch (u/char-at txt idx)]
+              (let [ch (ch-at txt idx)]
                 (if (= ch u/ch-open-brace)
                   (make-node {:endIdx (inc idx)
                               :name ".open"
                               :startIdx pos
                               :text (u/substr txt pos (inc idx))})
-                  (if (is-ident-char? ch)
+                  (if (contains? ident-chars-set ch)
                     (recur (inc idx))
                     nil)))
               nil))
@@ -356,62 +368,78 @@
       nil)))
 
 (defn parens-open-parser [txt pos]
-  (let [txt-len (u/str-len txt)]
-    (cond
-      (and (<= (+ pos 4) txt-len) (= (u/substr txt pos (+ pos 4)) "#?@("))
-      (make-node {:endIdx (+ pos 4) :name ".open" :startIdx pos :text "#?@("})
+  (let [txt-len (count txt)]
+    (if (< pos txt-len)
+      (let [c (ch-at txt pos)]
+        (cond
+          (= c u/ch-open-paren)
+          (make-node {:endIdx (inc pos) :name ".open" :startIdx pos :text "("})
 
-      (and (<= (+ pos 3) txt-len) (= (u/substr txt pos (+ pos 3)) "#?("))
-      (make-node {:endIdx (+ pos 3) :name ".open" :startIdx pos :text "#?("})
+          (= c u/ch-hash)
+          (cond
+            (and (<= (+ pos 4) txt-len) (= (u/substr txt pos (+ pos 4)) "#?@("))
+            (make-node {:endIdx (+ pos 4) :name ".open" :startIdx pos :text "#?@("})
 
-      (and (<= (+ pos 3) txt-len) (= (u/substr txt pos (+ pos 3)) "#=("))
-      (make-node {:endIdx (+ pos 3) :name ".open" :startIdx pos :text "#=("})
+            (and (<= (+ pos 3) txt-len) (= (u/substr txt pos (+ pos 3)) "#?("))
+            (make-node {:endIdx (+ pos 3) :name ".open" :startIdx pos :text "#?("})
 
-      (and (<= (+ pos 2) txt-len) (= (u/substr txt pos (+ pos 2)) "#("))
-      (make-node {:endIdx (+ pos 2) :name ".open" :startIdx pos :text "#("})
+            (and (<= (+ pos 3) txt-len) (= (u/substr txt pos (+ pos 3)) "#=("))
+            (make-node {:endIdx (+ pos 3) :name ".open" :startIdx pos :text "#=("})
 
-      (and (< pos txt-len) (= (u/char-at txt pos) u/ch-open-paren))
-      (make-node {:endIdx (inc pos) :name ".open" :startIdx pos :text "("})
+            (and (<= (+ pos 2) txt-len) (= (u/substr txt pos (+ pos 2)) "#("))
+            (make-node {:endIdx (+ pos 2) :name ".open" :startIdx pos :text "#("})
 
-      :else nil)))
+            :else nil)
+
+          :else nil))
+      nil)))
 
 (defn string-open-parser [txt pos]
-  (let [txt-len (u/str-len txt)]
-    (cond
-      (and (<= (+ pos 2) txt-len) (= (u/substr txt pos (+ pos 2)) "#\""))
-      (make-node {:endIdx (+ pos 2) :name ".open" :startIdx pos :text "#\""})
+  (let [txt-len (count txt)]
+    (if (< pos txt-len)
+      (let [c (ch-at txt pos)]
+        (cond
+          (= c u/ch-double-quote)
+          (make-node {:endIdx (inc pos) :name ".open" :startIdx pos :text "\""})
 
-      (and (< pos txt-len) (= (u/char-at txt pos) u/ch-double-quote))
-      (make-node {:endIdx (inc pos) :name ".open" :startIdx pos :text "\""})
+          (and (= c u/ch-hash) (<= (+ pos 2) txt-len) (= (ch-at txt (inc pos)) u/ch-double-quote))
+          (make-node {:endIdx (+ pos 2) :name ".open" :startIdx pos :text "#\""})
 
-      :else nil)))
+          :else nil))
+      nil)))
 
 (defn meta-marker-parser [txt pos]
-  (let [txt-len (u/str-len txt)]
-    (cond
-      (and (<= (+ pos 2) txt-len) (= (u/substr txt pos (+ pos 2)) "#^"))
-      (make-node {:endIdx (+ pos 2) :name ".marker" :startIdx pos :text "#^"})
+  (let [txt-len (count txt)]
+    (if (< pos txt-len)
+      (let [c (ch-at txt pos)]
+        (cond
+          (= c u/ch-caret)
+          (make-node {:endIdx (inc pos) :name ".marker" :startIdx pos :text "^"})
 
-      (and (< pos txt-len) (= (u/char-at txt pos) u/ch-caret))
-      (make-node {:endIdx (inc pos) :name ".marker" :startIdx pos :text "^"})
+          (and (= c u/ch-hash) (<= (+ pos 2) txt-len) (= (ch-at txt (inc pos)) u/ch-caret))
+          (make-node {:endIdx (+ pos 2) :name ".marker" :startIdx pos :text "#^"})
 
-      :else nil)))
+          :else nil))
+      nil)))
 
 (defn wrap-marker-parser [txt pos]
-  (let [txt-len (u/str-len txt)]
-    (cond
-      (and (<= (+ pos 2) txt-len) (= (u/substr txt pos (+ pos 2)) "~@"))
-      (make-node {:endIdx (+ pos 2) :name ".marker" :startIdx pos :text "~@"})
+  (let [txt-len (count txt)]
+    (if (< pos txt-len)
+      (let [c (ch-at txt pos)]
+        (cond
+          (or (= c u/ch-at) (= c u/ch-single-quote) (= c u/ch-backtick))
+          (make-node {:endIdx (inc pos) :name ".marker" :startIdx pos :text (str c)})
 
-      (and (<= (+ pos 2) txt-len) (= (u/substr txt pos (+ pos 2)) "#'"))
-      (make-node {:endIdx (+ pos 2) :name ".marker" :startIdx pos :text "#'"})
+          (= c u/ch-tilde)
+          (if (and (< (inc pos) txt-len) (= (ch-at txt (inc pos)) u/ch-at))
+            (make-node {:endIdx (+ pos 2) :name ".marker" :startIdx pos :text "~@"})
+            (make-node {:endIdx (inc pos) :name ".marker" :startIdx pos :text "~"}))
 
-      (and (< pos txt-len)
-           (let [ch (u/char-at txt pos)]
-             (or (= ch u/ch-at) (= ch u/ch-single-quote) (= ch u/ch-backtick) (= ch u/ch-tilde))))
-      (make-node {:endIdx (inc pos) :name ".marker" :startIdx pos :text (str (u/char-at txt pos))})
+          (and (= c u/ch-hash) (< (inc pos) txt-len) (= (ch-at txt (inc pos)) u/ch-single-quote))
+          (make-node {:endIdx (+ pos 2) :name ".marker" :startIdx pos :text "#'"})
 
-      :else nil)))
+          :else nil))
+      nil)))
 
 ;; -----------------------------------------------------------------------------
 ;; Grammar Registry
@@ -493,20 +521,20 @@
                     :parser (Choice {:parsers ["_gap" "_form" (NotChar {:name "error" :char ")"})]})})
                  (Optional (Char {:name ".close" :char ")"}))]}))
 
-  (register-parser! "_gap"
-    {:parse
-     (fn [txt pos]
-       (if (< pos (u/str-len txt))
-         (let [ch (u/char-at txt pos)]
-           (cond
-             (contains? u/whitespace-char-set ch)
-             ((:parse (get-parser "_ws")) txt pos)
-             (= ch u/ch-semicolon)
-             ((:parse (get-parser "comment")) txt pos)
-             (= ch u/ch-hash)
-             ((:parse (get-parser "discard")) txt pos)
-             :else nil))
-         nil))})
+  (let [ws-fn (:parse (get-parser "_ws"))
+        comment-fn (:parse (get-parser "comment"))
+        discard-fn (:parse (get-parser "discard"))]
+    (register-parser! "_gap"
+      {:parse
+       (fn [txt pos]
+         (if (< pos (count txt))
+           (let [ch (ch-at txt pos)]
+             (cond
+               (contains? u/whitespace-char-set ch) (ws-fn txt pos)
+               (= ch u/ch-semicolon) (comment-fn txt pos)
+               (= ch u/ch-hash) (discard-fn txt pos)
+               :else nil))
+           nil))}))
 
   (register-parser! "meta"
     (SeqParser
@@ -536,23 +564,31 @@
                  (Repeat {:parser "_gap"})
                  (Named {:name ".body" :parser "_form"})]}))
 
-  (let [hash-form (Choice {:parsers ["token" "string" "parens" "braces" "wrap" "meta" "tagged"]})]
+  (let [hash-form (Choice {:parsers ["token" "string" "parens" "braces" "wrap" "meta" "tagged"]})
+        parens-fn (:parse (get-parser "parens"))
+        brackets-fn (:parse (get-parser "brackets"))
+        braces-fn (:parse (get-parser "braces"))
+        string-fn (:parse (get-parser "string"))
+        wrap-fn (:parse (get-parser "wrap"))
+        meta-fn (:parse (get-parser "meta"))
+        token-fn (:parse (get-parser "token"))
+        hash-fn (:parse hash-form)]
     (register-parser! "_hashForm" hash-form)
     (register-parser! "_form"
       {:parse
        (fn [txt pos]
-         (if (< pos (u/str-len txt))
-           (let [ch (u/char-at txt pos)]
+         (if (< pos (count txt))
+           (let [ch (ch-at txt pos)]
              (cond
-               (= ch u/ch-open-paren) ((:parse (get-parser "parens")) txt pos)
-               (= ch u/ch-open-bracket) ((:parse (get-parser "brackets")) txt pos)
-               (= ch u/ch-open-brace) ((:parse (get-parser "braces")) txt pos)
-               (= ch u/ch-double-quote) ((:parse (get-parser "string")) txt pos)
+               (= ch u/ch-open-paren) (parens-fn txt pos)
+               (= ch u/ch-open-bracket) (brackets-fn txt pos)
+               (= ch u/ch-open-brace) (braces-fn txt pos)
+               (= ch u/ch-double-quote) (string-fn txt pos)
                (or (= ch u/ch-at) (= ch u/ch-single-quote) (= ch u/ch-backtick) (= ch u/ch-tilde))
-               ((:parse (get-parser "wrap")) txt pos)
-               (= ch u/ch-caret) ((:parse (get-parser "meta")) txt pos)
-               (= ch u/ch-hash) ((:parse hash-form) txt pos)
-               :else ((:parse (get-parser "token")) txt pos)))
+               (wrap-fn txt pos)
+               (= ch u/ch-caret) (meta-fn txt pos)
+               (= ch u/ch-hash) (hash-fn txt pos)
+               :else (token-fn txt pos)))
            nil))}))
 
   (register-parser! "source"

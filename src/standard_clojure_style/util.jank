@@ -41,7 +41,7 @@
   (if (nil? s) 0 (count s)))
 
 (defn char-at [s idx]
-  (nth s idx))
+  (first (subs s idx 1)))
 
 (defn substr
   ([s start]
@@ -105,7 +105,7 @@
       (loop [i 0]
         (cond
           (= i n) ""
-          (contains? standard-whitespace-chars (nth s i)) (recur (inc i))
+          (contains? standard-whitespace-chars (char-at s i)) (recur (inc i))
           :else (substr s i n))))))
 
 (defn trimr [s]
@@ -115,7 +115,7 @@
       (loop [i n]
         (cond
           (zero? i) ""
-          (contains? standard-whitespace-chars (nth s (dec i))) (recur (dec i))
+          (contains? standard-whitespace-chars (char-at s (dec i))) (recur (dec i))
           :else (substr s 0 i))))))
 
 (defn trim [s]
@@ -203,9 +203,9 @@
     (let [n (count txt)]
       (loop [i 0]
         (if (< i n)
-          (if (= (nth txt i) ch-semicolon)
+          (if (= (char-at txt i) ch-semicolon)
             (recur (inc i))
-            (if (and (> i 0) (not= (nth txt i) ch-space))
+            (if (and (> i 0) (not= (char-at txt i) ch-space))
               (str (subs txt 0 i) " " (subs txt i (- n i)))
               txt))
           txt)))))
@@ -216,11 +216,11 @@
     (let [n (count comment-txt)]
       (loop [i 0]
         (if (< i n)
-          (if (= (nth comment-txt i) ch-semicolon)
+          (if (= (char-at comment-txt i) ch-semicolon)
             (recur (inc i))
             (if (zero? i)
               false
-              (not= (nth comment-txt i) ch-space)))
+              (not= (char-at comment-txt i) ch-space)))
           false)))))
 
 (defn remove-leading-whitespace [txt]
@@ -229,7 +229,7 @@
     (let [n (count txt)]
       (loop [i 0]
         (if (< i n)
-          (let [c (nth txt i)]
+          (let [c (char-at txt i)]
             (cond
               (or (= c ch-space) (= c ch-comma))
               (recur (inc i))
@@ -237,7 +237,7 @@
               (= c ch-newline)
               (loop [j (inc i)]
                 (if (< j n)
-                  (let [c2 (nth txt j)]
+                  (let [c2 (char-at txt j)]
                     (cond
                       (or (= c2 ch-newline) (= c2 ch-return) (= c2 ch-space))
                       (recur (inc j))
